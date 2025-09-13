@@ -7,6 +7,8 @@ from mss import mss
 from dotenv import load_dotenv
 from text_to_speech import speak_text
 from twilio.rest import Client
+import google.generativeai as genai
+from PIL import Image
 
 # Load environment variables
 load_dotenv()
@@ -39,6 +41,36 @@ def capture_emergency_screenshot():
         print(f"❌ Error capturing emergency screenshot: {e}")
         return None
 
+def analyze_emergency_screenshot(image_path):
+    """Analyze the emergency screenshot and return a text description"""
+    if not image_path or not os.path.exists(image_path):
+        return "No screenshot available"
+    
+    try:
+        if not GEMINI_API_KEY:
+            return "Emergency screenshot captured (AI analysis unavailable)"
+        
+        # Initialize Gemini model
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Open and prepare the image
+        image = Image.open(image_path)
+        
+        # Emergency-focused prompt
+        prompt = (
+            "This is an emergency screenshot. Briefly describe what you see in 1-2 sentences. "
+            "Focus on: people, locations, activities, potential dangers, or anything that might be "
+            "relevant for emergency responders. Be concise and factual."
+        )
+        
+        # Analyze with Gemini
+        response = model.generate_content([prompt, image])
+        return response.text.strip()
+        
+    except Exception as e:
+        print(f"❌ Error analyzing screenshot: {e}")
+        return "Emergency screenshot captured (analysis failed)"
+
 def get_location():
     """Get current location using IP-based geolocation"""
     try:
@@ -70,8 +102,8 @@ def get_location():
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-def send_emergency_sms(location_info, screenshot_path=None):
-    """Send SOS SMS with location and screenshot to emergency contact"""
+def send_emergency_sms(location_info, screenshot_path=None, screenshot_description=""):
+    """Send SOS SMS with location and screenshot description to emergency contact"""
     
     # Get credentials from environment variables
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -85,18 +117,31 @@ def send_emergency_sms(location_info, screenshot_path=None):
     
     client = Client(account_sid, auth_token)
     
-    message_body = f"🚨 SOS ALERT 🚨\\nLocation: {location_info['lat']:.5f},{location_info['lon']:.5f}\\nCity: {location_info['city']}, {location_info['region']}, {location_info['country']}\\nTime: {location_info['timestamp']}\\nIP: {location_info['ip']}"
+    # Create a more natural-looking emergency message
+    message_body = (
+        f"🚨 EMERGENCY ALERT\n\n"
+        f"📍 Location: {location_info['city']}, {location_info['region']}\n"
+        f"🌐 Coordinates: {location_info['lat']:.5f}, {location_info['lon']:.5f}\n"
+        f"🕐 Time: {location_info['timestamp']}\n"
+    )
+    
+    # Add screenshot description if available
+    if screenshot_description and screenshot_description != "No screenshot available":
+        message_body += f"👁️ Visual: {screenshot_description}\n"
+    
+    message_body += f"\nThis is an automated emergency alert."
     
     try:
-        # Send message without screenshot attachment (file URLs don't work with Twilio)
+        # Send message with natural formatting
         message = client.messages.create(
             body=message_body,
             from_=from_number,
+            media_url=image_path,
             to=emergency_contact
         )
         print(f"✅ SOS sent to {emergency_contact}")
         if screenshot_path and os.path.exists(screenshot_path):
-            print(f"📷 Screenshot saved locally: {screenshot_path}")
+            print(f"📷 Screenshot analyzed and described in message")
             
     except Exception as e:
         print(f"❌ Failed to send SOS: {e}")
@@ -109,11 +154,16 @@ def emergency_workflow():
     # Step 1: Immediately capture screenshot for context
     screenshot_path = capture_emergency_screenshot()
     
-    # Step 2: Get current location
+    # Step 2: Analyze the screenshot with AI
+    print("🤖 Analyzing emergency screenshot...")
+    screenshot_description = analyze_emergency_screenshot(screenshot_path)
+    print(f"📸 Screenshot analysis: {screenshot_description}")
+    
+    # Step 3: Get current location
     print("📍 Getting location...")
     location_info = get_location()
     
-    # Step 3: Create emergency message
+    # Step 4: Create emergency message
     location_message = (
         f"Emergency detected. "
         f"Location: {location_info['city']}, {location_info['region']}, {location_info['country']}. "
@@ -121,14 +171,14 @@ def emergency_workflow():
         f"Time: {location_info['timestamp']}"
     )
     
-    # Step 4: Speak emergency alert
+    # Step 5: Speak emergency alert
     print("🔊 Speaking emergency alert...")
     speak_text("Emergency workflow activated. Capturing screenshot, getting your location and alerting emergency contact.")
     
-    # Step 5: Send alerts with screenshot (currently just logging)
-    send_emergency_sms(location_info, screenshot_path)
+    # Step 6: Send alerts with screenshot description
+    send_emergency_sms(location_info, screenshot_path, screenshot_description)
     
-    # Step 6: Log everything to file for record keeping
+    # Step 7: Log everything to file for record keeping
     log_file = f"emergency_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     with open(log_file, 'w') as f:
         f.write(f"EMERGENCY LOG\n")
@@ -137,7 +187,8 @@ def emergency_workflow():
         f.write(f"Address: {location_info['city']}, {location_info['region']}, {location_info['country']}\n")
         f.write(f"IP: {location_info['ip']}\n")
         f.write(f"Screenshot: {screenshot_path if screenshot_path else 'None captured'}\n")
-        f.write(f"Emergency Contact: +16478668110\n")
+        f.write(f"Screenshot Analysis: {screenshot_description}\n")
+        f.write(f"Emergency Contact: {os.getenv('EMERGENCY_CONTACT', 'Not set')}\n")
     
     print(f"📝 Emergency logged to: {log_file}")
     print("✅ Emergency workflow complete!")
@@ -145,7 +196,8 @@ def emergency_workflow():
     return {
         "location": location_info,
         "screenshot": screenshot_path,
-        "emergency_contact": "+16478668110",
+        "screenshot_description": screenshot_description,
+        "emergency_contact": os.getenv('EMERGENCY_CONTACT', 'Not set'),
         "log_file": log_file
     }
 
